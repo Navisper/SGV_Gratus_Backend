@@ -1,0 +1,85 @@
+generator client {
+  provider = "prisma-client-py"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL") // conexión a Supabase
+}
+
+model User {
+  id        String   @id @default(uuid())
+  nombre    String
+  email     String   @unique
+  password  String
+  rol       String   @default("admin")
+  tiendaId  String?
+  createdAt DateTime @default(now())
+
+  ventas    Sale[]
+}
+
+model Store {
+  id        String   @id @default(uuid())
+  nombre    String
+  direccion String?
+  createdAt DateTime @default(now())
+
+  productos Product[]
+  ventas    Sale[]
+  usuarios  User[]
+}
+
+model Product {
+  id           String   @id @default(uuid())
+  codigoUnico  String   @unique
+  nombre       String
+  categoria    String?
+  departamento String?
+  tipo         String?
+  costo        Float
+  precio       Float
+  stock        Int       @default(0)
+  tiendaId     String
+  createdAt    DateTime  @default(now())
+
+  ventas SaleItem[]
+}
+
+model Sale {
+  id        String   @id @default(uuid())
+  usuarioId String
+  tiendaId  String
+  total     Float
+  descuento Float   @default(0)
+  metodoPago String
+  createdAt DateTime @default(now())
+
+  usuario User     @relation(fields: [usuarioId], references: [id])
+  tienda  Store    @relation(fields: [tiendaId], references: [id])
+  items   SaleItem[]
+  factura Invoice?
+}
+
+model SaleItem {
+  id         String  @id @default(uuid())
+  ventaId    String
+  productoId String
+  cantidad   Int
+  precioUnit Float
+  subtotal   Float
+
+  venta    Sale    @relation(fields: [ventaId], references: [id])
+  producto Product @relation(fields: [productoId], references: [id])
+}
+
+model Invoice {
+  id          String   @id @default(uuid())
+  ventaId     String   @unique
+  consecutivo Int      @default(autoincrement())
+  pdfUrl      String?
+  impresa     Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  venta Sale @relation(fields: [ventaId], references: [id])
+}
