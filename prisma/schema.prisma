@@ -11,18 +11,19 @@ datasource db {
 }
 
 model users {
-  id            String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  nombre        String?      @db.VarChar(100)
-  email         String       @unique @db.VarChar(150)
-  password_hash String?
-  rol           String       @default("admin") @db.VarChar(20)
-  provider      AuthProvider @default(EMAIL)
-  google_sub    String?      @unique
-  avatar_url    String?      @db.VarChar(300)
-  tienda_id     String?      @db.Uuid
-  created_at    DateTime     @default(now()) @db.Timestamp(6)
-  updated_at    DateTime     @updatedAt @db.Timestamp(6)
-  sales         sales[]
+  id              String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  nombre          String?           @db.VarChar(100)
+  email           String            @unique @db.VarChar(150)
+  password_hash   String?
+  rol             String            @default("admin") @db.VarChar(20)
+  provider        AuthProvider      @default(EMAIL)
+  google_sub      String?           @unique
+  avatar_url      String?           @db.VarChar(300)
+  tienda_id       String?           @db.Uuid
+  created_at      DateTime          @default(now()) @db.Timestamp(6)
+  updated_at      DateTime          @updatedAt @db.Timestamp(6)
+  credit_payments credit_payments[]
+  sales           sales[]
 
   @@map("users")
 }
@@ -64,6 +65,8 @@ model sales {
   descuento   Decimal?     @default(0) @db.Decimal(10, 2)
   metodo_pago String?      @db.VarChar(50)
   created_at  DateTime?    @default(now()) @db.Timestamp(6)
+  anulada     Boolean?     @default(false)
+  credit      credits?
   factura     invoices[]
   items       sale_items[]
   tienda      stores?      @relation(fields: [tienda_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
@@ -95,6 +98,52 @@ model invoices {
   venta       sales?    @relation(fields: [venta_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@map("invoices")
+}
+
+model customers {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  nombre     String    @db.VarChar(150)
+  telefono   String?   @db.VarChar(50)
+  email      String?   @db.VarChar(150)
+  direccion  String?
+  created_at DateTime? @default(now()) @db.Timestamptz(6)
+  credits    credits[]
+
+  @@map("customers")
+}
+
+model credits {
+  id          String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sale_id     String            @unique @db.Uuid
+  customer_id String            @db.Uuid
+  total       Decimal           @db.Decimal(12, 2)
+  saldo       Decimal           @db.Decimal(12, 2)
+  due_date    DateTime          @db.Date
+  status      String            @default("open") @db.VarChar(20)
+  created_at  DateTime?         @default(now()) @db.Timestamptz(6)
+  payments    credit_payments[]
+  customer    customers         @relation(fields: [customer_id], references: [id], onUpdate: NoAction)
+  sale        sales             @relation(fields: [sale_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([customer_id], map: "idx_credits_customer")
+  @@index([due_date], map: "idx_credits_due_date")
+  @@index([status], map: "idx_credits_status")
+  @@map("credits")
+}
+
+model credit_payments {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  credit_id   String    @db.Uuid
+  usuario_id  String?   @db.Uuid
+  amount      Decimal   @db.Decimal(12, 2)
+  metodo_pago String    @default("efectivo") @db.VarChar(50)
+  notes       String?
+  paid_at     DateTime? @default(now()) @db.Timestamptz(6)
+  credit      credits   @relation(fields: [credit_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  usuario     users?    @relation(fields: [usuario_id], references: [id], onUpdate: NoAction)
+
+  @@index([credit_id], map: "idx_credit_payments_credit")
+  @@map("credit_payments")
 }
 
 enum AuthProvider {
