@@ -11,6 +11,9 @@ def _parse_date(s: Optional[str]) -> Optional[date]:
         return None
     return datetime.strptime(s, "%Y-%m-%d").date()
 
+def _to_datestr(d: Optional[date]) -> Optional[str]:
+    return d.isoformat() if isinstance(d, date) else (d if d is None else str(d))
+
 @router.get("/summary")
 async def summary(_=Depends(require_role("admin"))):
     q = "SELECT (SELECT COUNT(*) FROM products) AS num_productos, (SELECT COUNT(*) FROM sales) AS num_ventas, (SELECT COALESCE(SUM(total),0) FROM sales) AS total_vendido"
@@ -99,13 +102,11 @@ async def sales_timeseries(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None
 ):
-    """
-    Serie temporal de ventas (contado + crédito), por día/semana/mes.
-    Devuelve: bucket, total_vendido, num_ventas
-    """
     g = {"day":"day","week":"week","month":"month"}[granularity]
     d_from = _parse_date(date_from)
     d_to   = _parse_date(date_to)
+    d_from_s = _to_datestr(d_from)
+    d_to_s   = _to_datestr(d_to)
 
     q = f"""
     WITH bounds AS (
@@ -133,7 +134,7 @@ async def sales_timeseries(
     LEFT JOIN summed sumd USING (bucket_date)
     ORDER BY s.bucket_date;
     """
-    rows = await db.query_raw(q, d_from, d_to)  # type: ignore
+    rows = await db.query_raw(q, d_from_s, d_to_s)  # <-- strings
     return rows
 
 
@@ -143,6 +144,10 @@ async def credits_timeseries(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None
 ):
+    g = {"day":"day","week":"week","month":"month"}[granularity]
+    d_from = _parse_date(date_from)
+    d_to   = _parse_date(date_to)
+    
     """
     Serie temporal de cartera:
     - credit_issued: total de créditos creados en el período (sum(credits.total))
@@ -211,6 +216,9 @@ async def credits_repayment_rate(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None
 ):
+    g = {"day":"day","week":"week","month":"month"}[granularity]
+    d_from = _parse_date(date_from)
+    d_to   = _parse_date(date_to)
     """
     Tasa de recuperación = pagos / créditos emitidos por período.
     Para períodos sin emisión, devuelve 0.

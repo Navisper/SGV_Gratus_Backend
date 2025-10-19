@@ -1,8 +1,8 @@
-from fastapi import APIRouter, HTTPException, status, Request
+from fastapi import APIRouter, HTTPException, status, Request, Depends
 from pydantic import BaseModel, EmailStr
 from fastapi.responses import RedirectResponse
 from app.db.client import db
-from app.core.security import hash_password, verify_password, create_access_token
+from app.core.security import hash_password, verify_password, create_access_token, get_current_user
 import os, httpx, jwt, hmac, hashlib, secrets
 from urllib.parse import urlencode, quote
 
@@ -134,7 +134,7 @@ async def google_callback(body: GoogleCallbackBody):
         })
     else:
         if not user.google_sub:
-            await db.users.update(where={"id": user.id}, data={"google_sub": sub, "provider": "google"})
+            await db.users.update(where={"id": user.id}, data={"google_sub": sub, "provider": "GOOGLE"})
     token = create_access_token(subject=user.id, role=(user.rol or "cajero"))
     return TokenResponse(access_token=token)
 
@@ -188,13 +188,13 @@ async def google_callback(request: Request):
         user = await db.users.create(data={
             "nombre": name,
             "email": email,
-            "provider": "google",
+            "provider": "GOOGLE",
             "google_sub": sub,
             "rol": role,
         })
     else:
         if not user.google_sub:
-            await db.users.update(where={"id": user.id}, data={"google_sub": sub, "provider": "google"})
+            await db.users.update(where={"id": user.id}, data={"google_sub": sub, "provider": "GOOGLE"})
 
     # Emite tu JWT
     jwt_token = create_access_token(subject=user.id, role=(user.rol or "cajero"))
@@ -211,3 +211,15 @@ async def google_callback(request: Request):
     resp = RedirectResponse(url=redirect_url, status_code=302)
     resp.delete_cookie("oauth_state")
     return resp
+
+@router.get("/me")
+async def get_me(current_user = Depends(get_current_user)):
+    """Devuelve los datos del usuario autenticado."""
+    return {
+        "id": current_user.id,
+        "nombre": current_user.nombre,
+        "email": current_user.email,
+        "rol": current_user.rol,
+        "provider": current_user.provider,
+        "created_at": current_user.created_at,
+    }
