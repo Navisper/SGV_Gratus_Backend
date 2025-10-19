@@ -17,9 +17,9 @@ class SaleItemIn(BaseModel):
     precio_unitario: float = Field(..., gt=0)
 
 class SaleCreate(BaseModel):
-    usuario_id: str
-    tienda_id: str
-    metodo_pago: str = Field(..., min_length=1)  # efectivo | tarjeta | transferencia | etc.
+    usuario_id: Optional[str] = None
+    tienda_id: Optional[str] = None
+    metodo_pago: str = Field(..., min_length=1)  # efectivo|tarjeta|transferencia|etc
     descuento: float = Field(0, ge=0)
     items: List[SaleItemIn]
 
@@ -44,25 +44,10 @@ def _parse_date(s: Optional[str]) -> Optional[date]:
 
 @router.post("/", dependencies=[Depends(require_role("admin","cajero"))])
 async def create_sale(payload: SaleCreate):
-    """
-    Crea una venta con items, valida stock y descuenta inventario.
-    Estructura del body:
-    {
-      "usuario_id": "uuid",
-      "tienda_id": "uuid",
-      "metodo_pago": "efectivo",
-      "descuento": 0,
-      "items": [
-        {"codigo_unico": "ABC-123", "cantidad": 2, "precio_unitario": 10000}
-      ]
-    }
-    """
-    # Buscar productos
     codes = [i.codigo_unico for i in payload.items]
     prods = await db.products.find_many(where={"codigo_unico": {"in": codes}})
     pmap = {p.codigo_unico: p for p in prods}
 
-    # Validar existencia y stock
     for it in payload.items:
         p = pmap.get(it.codigo_unico)
         if not p:
@@ -70,22 +55,22 @@ async def create_sale(payload: SaleCreate):
         if (p.stock or 0) < it.cantidad:
             raise HTTPException(400, f"Stock insuficiente para {p.nombre} ({p.codigo_unico})")
 
-    # Totales
     subtotal = sum(it.precio_unitario * it.cantidad for it in payload.items)
     total = subtotal - float(payload.descuento or 0)
     if total < 0:
         raise HTTPException(400, "El total no puede ser negativo")
 
-    # Transacción
-    async with db.tx() as tx:
-        sale = await tx.sales.create(data={
-            "usuario_id": payload.usuario_id,
-            "tienda_id": payload.tienda_id,
-            "metodo_pago": payload.metodo_pago,
-            "descuento": payload.descuento,
-            "total": total
-        })
+    sale_data: Dict[str, Any] = {
+        "metodo_pago": payload.metodo_pago,
+        "descuento": payload.descuento,
+        "total": total,
+    }
+    # incluir solo si vienen
+    if payload.usuario_id: sale_data["usuario_id"] = payload.usuario_id
+    if payload.tienda_id:  sale_data["tienda_id"]  = payload.tienda_id
 
+    async with db.tx() as tx:
+        sale = await tx.sales.create(data=sale_data)
         for it in payload.items:
             p = pmap[it.codigo_unico]
             await tx.sale_items.create(data={
@@ -95,10 +80,7 @@ async def create_sale(payload: SaleCreate):
                 "precio_unitario": it.precio_unitario,
                 "subtotal": it.precio_unitario * it.cantidad
             })
-            await tx.products.update(
-                where={"id": p.id},
-                data={"stock": (p.stock - it.cantidad)}
-            )
+            await tx.products.update(where={"id": p.id}, data={"stock": (p.stock - it.cantidad)})
 
     return {"ok": True, "sale_id": sale.id, "subtotal": subtotal, "descuento": float(payload.descuento or 0), "total": total}
 

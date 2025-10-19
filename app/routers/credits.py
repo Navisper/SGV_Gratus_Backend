@@ -4,6 +4,11 @@ from datetime import datetime, date
 from pydantic import BaseModel, Field, validator
 from app.db.client import db
 from app.core.security import require_role
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+from reportlab.lib.units import cm
+from fastapi.responses import StreamingResponse, PlainTextResponse
+import io, csv
 
 router = APIRouter()
 
@@ -15,9 +20,9 @@ class CreditSaleItem(BaseModel):
 
 class CreditSaleCreate(BaseModel):
   customer_id: str
-  usuario_id: str
-  tienda_id: str
-  metodo_pago: str = "credito"  # forzamos crédito
+  usuario_id: Optional[str] = None
+  tienda_id: Optional[str] = None
+  metodo_pago: str = "credito"   # fijo crédito
   descuento: float = 0
   due_date: date
   items: List[CreditSaleItem]
@@ -42,37 +47,32 @@ def _parse_date(s: Optional[str]) -> Optional[date]:
 
 @router.post("/sales", dependencies=[Depends(require_role("admin","cajero"))])
 async def create_credit_sale(body: CreditSaleCreate):
-  """
-  Crea una venta a crédito:
-  - Crea sales + sale_items (descuenta stock)
-  - Crea credits con saldo = total (total = sum(items) - descuento)
-  """
   codes = [i.codigo_unico for i in body.items]
   prods = await db.products.find_many(where={"codigo_unico": {"in": codes}})
   pmap = {p.codigo_unico: p for p in prods}
 
-  # Validaciones
   for it in body.items:
     p = pmap.get(it.codigo_unico)
     if not p:
       raise HTTPException(400, f"Producto no existe: {it.codigo_unico}")
     if (p.stock or 0) < it.cantidad:
-      raise HTTPException(400, f"Stock insuficiente para {p.nombre} ({p.codigo_unico})")
+      raise HTTPException(400, f"Stock insuficiente para {p.nombre} ({it.codigo_unico})")
 
   subtotal = sum(it.precio_unitario * it.cantidad for it in body.items)
   total = subtotal - float(body.descuento or 0)
   if total <= 0:
     raise HTTPException(400, "El total debe ser mayor a 0")
 
-  # Transacción atómica
+  sale_data = {
+    "metodo_pago": "credito",
+    "descuento": body.descuento,
+    "total": total
+  }
+  if body.usuario_id: sale_data["usuario_id"] = body.usuario_id
+  if body.tienda_id:  sale_data["tienda_id"]  = body.tienda_id
+
   async with db.tx() as tx:
-    sale = await tx.sales.create(data={
-      "usuario_id": body.usuario_id,
-      "tienda_id": body.tienda_id,
-      "metodo_pago": "credito",
-      "descuento": body.descuento,
-      "total": total
-    })
+    sale = await tx.sales.create(data=sale_data)
     for it in body.items:
       p = pmap[it.codigo_unico]
       await tx.sale_items.create(data={
@@ -82,10 +82,7 @@ async def create_credit_sale(body: CreditSaleCreate):
         "precio_unitario": it.precio_unitario,
         "subtotal": it.precio_unitario * it.cantidad
       })
-      await tx.products.update(
-        where={"id": p.id},
-        data={"stock": (p.stock - it.cantidad)}
-      )
+      await tx.products.update(where={"id": p.id}, data={"stock": (p.stock - it.cantidad)})
 
     credit = await tx.credits.create(data={
       "sale_id": sale.id,
@@ -247,3 +244,84 @@ async def customer_statement(customer_id: str):
   if not rows:
     raise HTTPException(404, "Cliente no encontrado")
   return rows[0]
+
+@router.get("/customers/{customer_id}/statement.csv", dependencies=[Depends(require_role("admin","cajero"))])
+async def customer_statement_csv(customer_id: str):
+  """
+  Exporta el estado de cuenta del cliente en CSV.
+  """
+  # reutilizamos la consulta del estado de cuenta
+  data = await customer_statement(customer_id)
+
+  buf = io.StringIO()
+  writer = csv.writer(buf)
+  writer.writerow(["Cliente", data["nombre"]])
+  writer.writerow([])
+  writer.writerow(["credit_id","sale_id","total","saldo","due_date","status","payments_count","payments_total"])
+
+  for c in data["credits"]:
+    pays = c.get("payments") or []
+    total_pays = sum(float(p.get("amount",0) or 0) for p in pays)
+    writer.writerow([
+      c["credit_id"], c["sale_id"], c["total"], c["saldo"], c["due_date"], c["status"],
+      len(pays), total_pays
+    ])
+
+  resp = PlainTextResponse(buf.getvalue(), media_type="text/csv; charset=utf-8")
+  filename = f"estado_cuenta_{customer_id}.csv"
+  resp.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+  return resp
+
+
+@router.get("/customers/{customer_id}/statement.pdf", dependencies=[Depends(require_role("admin","cajero"))])
+async def customer_statement_pdf(customer_id: str):
+  """
+  Exporta el estado de cuenta del cliente en PDF sencillo (1–2 páginas).
+  """
+  data = await customer_statement(customer_id)
+
+  buffer = io.BytesIO()
+  c = canvas.Canvas(buffer, pagesize=A4)
+  width, height = A4
+
+  y = height - 2*cm
+  c.setFont("Helvetica-Bold", 14)
+  c.drawString(2*cm, y, f"Estado de Cuenta - {data['nombre']}")
+  y -= 1*cm
+
+  c.setFont("Helvetica", 10)
+  for cred in data["credits"]:
+    if y < 3*cm:
+      c.showPage()
+      y = height - 2*cm
+      c.setFont("Helvetica", 10)
+
+    linea = f"Crédito: {cred['credit_id']}  | Venta: {cred['sale_id']}  | Total: {cred['total']}  | Saldo: {cred['saldo']}  | Vence: {cred['due_date']}  | Estado: {cred['status']}"
+    c.drawString(2*cm, y, linea)
+    y -= 0.6*cm
+
+    pays = cred.get("payments") or []
+    if not pays:
+      c.drawString(2.5*cm, y, "- Sin pagos")
+      y -= 0.5*cm
+    else:
+      for p in pays:
+        if y < 3*cm:
+          c.showPage()
+          y = height - 2*cm
+          c.setFont("Helvetica", 10)
+        pline = f"  • Pago {p['id']} | {p['paid_at']} | {p['metodo_pago']} | ${p['amount']} | {p.get('notes','') or ''}"
+        c.drawString(2.5*cm, y, pline)
+        y -= 0.5*cm
+
+    y -= 0.2*cm
+
+  c.showPage()
+  c.save()
+  buffer.seek(0)
+
+  return StreamingResponse(
+    buffer,
+    media_type="application/pdf",
+    headers={"Content-Disposition": f'attachment; filename="estado_cuenta_{customer_id}.pdf"'}
+  )
