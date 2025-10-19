@@ -1,8 +1,15 @@
 from fastapi import APIRouter, Depends, Query
+from typing import Optional
+from datetime import datetime, date
 from app.db.client import db
 from app.core.security import require_role
 
 router = APIRouter()
+
+def _parse_date(s: Optional[str]) -> Optional[date]:
+    if not s:
+        return None
+    return datetime.strptime(s, "%Y-%m-%d").date()
 
 @router.get("/summary")
 async def summary(_=Depends(require_role("admin"))):
@@ -84,4 +91,175 @@ async def credits_upcoming_due(days: int = Query(7, ge=1, le=60)):
     ORDER BY c.due_date ASC
     """
     rows = await db.query_raw(q, days)  # type: ignore
+    return rows
+
+@router.get("/sales/timeseries", dependencies=[Depends(require_role("admin","cajero"))])
+async def sales_timeseries(
+    granularity: str = Query("day", regex="^(day|week|month)$"),
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None
+):
+    """
+    Serie temporal de ventas (contado + crédito), por día/semana/mes.
+    Devuelve: bucket, total_vendido, num_ventas
+    """
+    g = {"day":"day","week":"week","month":"month"}[granularity]
+    d_from = _parse_date(date_from)
+    d_to   = _parse_date(date_to)
+
+    q = f"""
+    WITH bounds AS (
+      SELECT
+        COALESCE($1::date, (SELECT MIN(created_at)::date FROM sales)) AS dmin,
+        COALESCE($2::date, current_date) AS dmax
+    ),
+    series AS (
+      SELECT generate_series(dmin, dmax, '1 {g}'::interval)::date AS bucket_date
+      FROM bounds
+    ),
+    summed AS (
+      SELECT date_trunc('{g}', s.created_at)::date AS bucket_date,
+             COUNT(*) AS num_ventas,
+             COALESCE(SUM(s.total),0) AS total_vendido
+      FROM sales s
+      WHERE s.created_at::date BETWEEN (SELECT dmin FROM bounds) AND (SELECT dmax FROM bounds)
+        AND COALESCE(s.anulada,false) = false
+      GROUP BY 1
+    )
+    SELECT s.bucket_date::text AS bucket,
+           COALESCE(sumd.total_vendido,0) AS total_vendido,
+           COALESCE(sumd.num_ventas,0)     AS num_ventas
+    FROM series s
+    LEFT JOIN summed sumd USING (bucket_date)
+    ORDER BY s.bucket_date;
+    """
+    rows = await db.query_raw(q, d_from, d_to)  # type: ignore
+    return rows
+
+
+@router.get("/credits/timeseries", dependencies=[Depends(require_role("admin","cajero"))])
+async def credits_timeseries(
+    granularity: str = Query("day", regex="^(day|week|month)$"),
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None
+):
+    """
+    Serie temporal de cartera:
+    - credit_issued: total de créditos creados en el período (sum(credits.total))
+    - payments_received: total abonado en el período (sum(credit_payments.amount))
+    - net_change: issued - payments
+    - outstanding_end: saldo acumulado al fin de cada bucket (aprox = sum(issued) - sum(payments) acumulado)
+    """
+    g = {"day":"day","week":"week","month":"month"}[granularity]
+    d_from = _parse_date(date_from)
+    d_to   = _parse_date(date_to)
+
+    q = f"""
+    WITH bounds AS (
+      SELECT
+        COALESCE($1::date, LEAST(
+          (SELECT MIN(created_at)::date FROM credits),
+          (SELECT MIN(paid_at)::date FROM credit_payments)
+        )) AS dmin,
+        COALESCE($2::date, current_date) AS dmax
+    ),
+    series AS (
+      SELECT generate_series(dmin, dmax, '1 {g}'::interval)::date AS bucket_date
+      FROM bounds
+    ),
+    issued AS (
+      SELECT date_trunc('{g}', c.created_at)::date AS bucket_date,
+             COALESCE(SUM(c.total),0) AS credit_issued
+      FROM credits c
+      WHERE c.created_at::date BETWEEN (SELECT dmin FROM bounds) AND (SELECT dmax FROM bounds)
+      GROUP BY 1
+    ),
+    paid AS (
+      SELECT date_trunc('{g}', p.paid_at)::date AS bucket_date,
+             COALESCE(SUM(p.amount),0) AS payments_received
+      FROM credit_payments p
+      WHERE p.paid_at::date BETWEEN (SELECT dmin FROM bounds) AND (SELECT dmax FROM bounds)
+      GROUP BY 1
+    ),
+    merged AS (
+      SELECT s.bucket_date,
+             COALESCE(i.credit_issued,0)    AS credit_issued,
+             COALESCE(p.payments_received,0) AS payments_received
+      FROM series s
+      LEFT JOIN issued i USING (bucket_date)
+      LEFT JOIN paid   p USING (bucket_date)
+      ORDER BY s.bucket_date
+    ),
+    running AS (
+      SELECT bucket_date::text AS bucket,
+             credit_issued,
+             payments_received,
+             (credit_issued - payments_received) AS net_change,
+             SUM(credit_issued - payments_received)
+               OVER (ORDER BY bucket_date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS outstanding_end
+      FROM merged
+    )
+    SELECT * FROM running;
+    """
+    rows = await db.query_raw(q, d_from, d_to)  # type: ignore
+    return rows
+
+
+@router.get("/credits/repayment-rate", dependencies=[Depends(require_role("admin","cajero"))])
+async def credits_repayment_rate(
+    granularity: str = Query("month", regex="^(month|week|day)$"),
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None
+):
+    """
+    Tasa de recuperación = pagos / créditos emitidos por período.
+    Para períodos sin emisión, devuelve 0.
+    """
+    g = {"day":"day","week":"week","month":"month"}[granularity]
+    d_from = _parse_date(date_from)
+    d_to   = _parse_date(date_to)
+
+    q = f"""
+    WITH bounds AS (
+      SELECT
+        COALESCE($1::date, LEAST(
+          (SELECT MIN(created_at)::date FROM credits),
+          (SELECT MIN(paid_at)::date FROM credit_payments)
+        )) AS dmin,
+        COALESCE($2::date, current_date) AS dmax
+    ),
+    series AS (
+      SELECT generate_series(dmin, dmax, '1 {g}'::interval)::date AS bucket_date
+      FROM bounds
+    ),
+    issued AS (
+      SELECT date_trunc('{g}', c.created_at)::date AS bucket_date,
+             COALESCE(SUM(c.total),0) AS credit_issued
+      FROM credits c
+      WHERE c.created_at::date BETWEEN (SELECT dmin FROM bounds) AND (SELECT dmax FROM bounds)
+      GROUP BY 1
+    ),
+    paid AS (
+      SELECT date_trunc('{g}', p.paid_at)::date AS bucket_date,
+             COALESCE(SUM(p.amount),0) AS payments_received
+      FROM credit_payments p
+      WHERE p.paid_at::date BETWEEN (SELECT dmin FROM bounds) AND (SELECT dmax FROM bounds)
+      GROUP BY 1
+    ),
+    merged AS (
+      SELECT s.bucket_date,
+             COALESCE(i.credit_issued,0) AS credit_issued,
+             COALESCE(p.payments_received,0) AS payments_received
+      FROM series s
+      LEFT JOIN issued i USING (bucket_date)
+      LEFT JOIN paid   p USING (bucket_date)
+      ORDER BY s.bucket_date
+    )
+    SELECT bucket_date::text AS bucket,
+           credit_issued,
+           payments_received,
+           CASE WHEN credit_issued > 0 THEN ROUND((payments_received / credit_issued)::numeric, 4) ELSE 0 END AS repayment_rate
+    FROM merged;
+    """
+    rows = await db.query_raw(q, d_from, d_to)  # type: ignore
     return rows
