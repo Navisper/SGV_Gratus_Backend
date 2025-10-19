@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+prisma
+pydantic
+python-dotenv
+reportlab
+python-barcode
+passlib[bcrypt]
+pyjwt
+authlib
+httpx

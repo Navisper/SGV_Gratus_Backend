@@ -1,85 +1,105 @@
 generator client {
-  provider = "prisma-client-py"
+  provider                    = "prisma-client-py"
+  recursive_type_depth        = "5"
+  enable_experimental_decimal = "true"
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL") // conexión a Supabase
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
-model User {
-  id        String   @id @default(uuid())
-  nombre    String
-  email     String   @unique
-  password  String
-  rol       String   @default("admin")
-  tiendaId  String?
-  createdAt DateTime @default(now())
+model users {
+  id            String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  nombre        String?      @db.VarChar(100)
+  email         String       @unique @db.VarChar(150)
+  password_hash String?
+  rol           String       @default("admin") @db.VarChar(20)
+  provider      AuthProvider @default(EMAIL)
+  google_sub    String?      @unique
+  avatar_url    String?      @db.VarChar(300)
+  tienda_id     String?      @db.Uuid
+  created_at    DateTime     @default(now()) @db.Timestamp(6)
+  updated_at    DateTime     @updatedAt @db.Timestamp(6)
+  sales         sales[]
 
-  ventas    Sale[]
+  @@map("users")
 }
 
-model Store {
-  id        String   @id @default(uuid())
-  nombre    String
-  direccion String?
-  createdAt DateTime @default(now())
+model stores {
+  id         String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  nombre     String?    @db.VarChar(100)
+  direccion  String?
+  created_at DateTime?  @default(now()) @db.Timestamp(6)
+  products   products[]
+  sales      sales[]
 
-  productos Product[]
-  ventas    Sale[]
-  usuarios  User[]
+  @@map("stores")
 }
 
-model Product {
-  id           String   @id @default(uuid())
-  codigoUnico  String   @unique
-  nombre       String
-  categoria    String?
-  departamento String?
-  tipo         String?
-  costo        Float
-  precio       Float
-  stock        Int       @default(0)
-  tiendaId     String
-  createdAt    DateTime  @default(now())
+model products {
+  id           String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  codigo_unico String?      @unique @db.VarChar(50)
+  nombre       String?      @db.VarChar(150)
+  categoria    String?      @db.VarChar(100)
+  departamento String?      @db.VarChar(100)
+  tipo         String?      @db.VarChar(100)
+  costo        Decimal?     @db.Decimal(10, 2)
+  precio       Decimal?     @db.Decimal(10, 2)
+  stock        Int?         @default(0)
+  tienda_id    String?      @db.Uuid
+  created_at   DateTime?    @default(now()) @db.Timestamp(6)
+  stores       stores?      @relation(fields: [tienda_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  sale_items   sale_items[]
 
-  ventas SaleItem[]
+  @@map("products")
 }
 
-model Sale {
-  id        String   @id @default(uuid())
-  usuarioId String
-  tiendaId  String
-  total     Float
-  descuento Float   @default(0)
-  metodoPago String
-  createdAt DateTime @default(now())
+model sales {
+  id          String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  usuario_id  String?      @db.Uuid
+  tienda_id   String?      @db.Uuid
+  total       Decimal?     @db.Decimal(10, 2)
+  descuento   Decimal?     @default(0) @db.Decimal(10, 2)
+  metodo_pago String?      @db.VarChar(50)
+  created_at  DateTime?    @default(now()) @db.Timestamp(6)
+  factura     invoices[]
+  items       sale_items[]
+  tienda      stores?      @relation(fields: [tienda_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  usuario     users?       @relation(fields: [usuario_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
-  usuario User     @relation(fields: [usuarioId], references: [id])
-  tienda  Store    @relation(fields: [tiendaId], references: [id])
-  items   SaleItem[]
-  factura Invoice?
+  @@map("sales")
 }
 
-model SaleItem {
-  id         String  @id @default(uuid())
-  ventaId    String
-  productoId String
-  cantidad   Int
-  precioUnit Float
-  subtotal   Float
+model sale_items {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  venta_id        String?   @db.Uuid
+  producto_id     String?   @db.Uuid
+  cantidad        Int?
+  precio_unitario Decimal?  @db.Decimal(10, 2)
+  subtotal        Decimal?  @db.Decimal(10, 2)
+  producto        products? @relation(fields: [producto_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  venta           sales?    @relation(fields: [venta_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
-  venta    Sale    @relation(fields: [ventaId], references: [id])
-  producto Product @relation(fields: [productoId], references: [id])
+  @@map("sale_items")
 }
 
-model Invoice {
-  id          String   @id @default(uuid())
-  ventaId     String   @unique
-  consecutivo Int      @default(autoincrement())
-  pdfUrl      String?
-  impresa     Boolean  @default(false)
-  createdAt   DateTime @default(now())
+model invoices {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  venta_id    String?   @db.Uuid
+  consecutivo Int       @default(autoincrement())
+  pdf_url     String?
+  impresa     Boolean?  @default(false)
+  created_at  DateTime? @default(now()) @db.Timestamp(6)
+  venta       sales?    @relation(fields: [venta_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
-  venta Sale @relation(fields: [ventaId], references: [id])
+  @@map("invoices")
+}
+
+enum AuthProvider {
+  GOOGLE
+  EMAIL
+  GITHUB
+  LOCAL
 }
