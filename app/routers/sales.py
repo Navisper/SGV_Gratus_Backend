@@ -1,6 +1,7 @@
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, HTTPException, Depends, Query, status
 from typing import List, Dict, Any, Optional
 from datetime import datetime, date
+from uuid import UUID
 from pydantic import BaseModel, Field, validator
 from app.db.client import db
 from app.core.security import require_role
@@ -90,7 +91,23 @@ async def get_sale(sale_id: str):
     """
     Trae la venta y sus items con datos de producto.
     """
-    # Prisma Python aún no soporta include.deep tipo Prisma JS, usamos consulta SQL para traer todo de una
+    # Validar que el sale_id no sea "undefined" o vacío
+    if not sale_id or sale_id == "undefined":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Sale ID is required"
+        )
+    
+    # Validar formato UUID
+    try:
+        sale_uuid = UUID(sale_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid sale ID format"
+        )
+    
+    # Consulta SQL con cast explícito a UUID
     q = """
     SELECT
       s.id, s.usuario_id, s.tienda_id, s.metodo_pago, s.descuento, s.total, s.created_at, COALESCE(s.anulada,false) as anulada,
@@ -106,13 +123,22 @@ async def get_sale(sale_id: str):
     FROM sales s
     LEFT JOIN sale_items si ON si.venta_id = s.id
     LEFT JOIN products p ON p.id = si.producto_id
-    WHERE s.id = $1
+    WHERE s.id = $1::uuid  -- CAST EXPLÍCITO A UUID
     GROUP BY s.id
     """
-    rows = await db.query_raw(q, sale_id)  # type: ignore
-    if not rows:
-        raise HTTPException(404, "Venta no encontrada")
-    return rows[0]
+    
+    try:
+        rows = await db.query_raw(q, str(sale_uuid))  # type: ignore
+        if not rows:
+            raise HTTPException(status_code=404, detail="Venta no encontrada")
+        return rows[0]
+    except Exception as e:
+        # Log del error para debugging
+        print(f"Error en get_sale: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error interno del servidor"
+        )
 
 
 @router.get("/", dependencies=[Depends(require_role("admin","cajero"))])
@@ -268,17 +294,34 @@ async def cancel_sale(sale_id: str):
     - Si ya está anulada, devuelve 409.
     - Restaura stock de todos los items.
     - Marca sales.anulada = true
-
-    Requiere: ALTER TABLE sales ADD COLUMN IF NOT EXISTS anulada boolean DEFAULT false;
     """
-    sale = await db.sales.find_unique(where={"id": sale_id})
+    # Validar que el sale_id no sea "undefined" o vacío
+    if not sale_id or sale_id == "undefined":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Sale ID is required"
+        )
+    
+    # Validar formato UUID
+    try:
+        sale_uuid = UUID(sale_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid sale ID format"
+        )
+    
+    # Usar el UUID validado
+    sale_id_str = str(sale_uuid)
+    
+    sale = await db.sales.find_unique(where={"id": sale_id_str})
     if not sale:
         raise HTTPException(404, "Venta no encontrada")
     if getattr(sale, "anulada", False):
         raise HTTPException(status_code=409, detail="La venta ya está anulada")
 
     # Traer items de venta
-    items = await db.sale_items.find_many(where={"venta_id": sale_id})
+    items = await db.sale_items.find_many(where={"venta_id": sale_id_str})
     if not items:
         raise HTTPException(400, "Venta sin items, no se puede anular correctamente")
 
@@ -294,7 +337,7 @@ async def cancel_sale(sale_id: str):
                 data={"stock": (prod.stock or 0) + it.cantidad}
             )
         # Marcar anulado
-        await tx.sales.update(where={"id": sale_id}, data={"anulada": True})
+        await tx.sales.update(where={"id": sale_id_str}, data={"anulada": True})
 
-    return {"ok": True, "sale_id": sale_id, "message": "Venta anulada y stock restaurado"}
+    return {"ok": True, "sale_id": sale_id_str, "message": "Venta anulada y stock restaurado"}
 
