@@ -17,7 +17,7 @@ GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:8000/au
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 STATE_SECRET = (os.getenv("OAUTH_STATE_SECRET") or os.getenv("SECRET_KEY") or "change-me").encode()
 
-#metodo para mostrar estado 
+#metodo para mostrar estado ddd
 def _sign_state(nonce: str) -> str:
     sig = hmac.new(STATE_SECRET, nonce.encode(), hashlib.sha256).hexdigest()
     return f"{nonce}.{sig}"
