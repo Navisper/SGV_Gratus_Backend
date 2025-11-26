@@ -56,6 +56,8 @@ class GoogleCallbackBody(BaseModel):
 # Endpoints
 # ============================
 
+#metodos para router
+
 @router.post(
     "/register",
     response_model=TokenResponse,
