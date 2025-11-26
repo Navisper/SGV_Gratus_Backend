@@ -16,6 +16,8 @@ router = APIRouter()
 #                     SCHEMAS
 # =========================================================
 
+#clases para credito
+
 class CreditSaleItem(BaseModel):
     """Item individual dentro de una venta a crédito."""
     codigo_unico: str = Field(..., description="Código único del producto")
