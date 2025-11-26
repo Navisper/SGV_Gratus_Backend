@@ -5,7 +5,7 @@ from app.db.client import db
 from app.core.security import require_role
 
 router = APIRouter()
-
+#metodo para reportes
 def _parse_date(s: Optional[str]) -> Optional[date]:
     if not s:
         return None
