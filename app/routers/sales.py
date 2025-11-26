@@ -12,6 +12,8 @@ router = APIRouter()
 # Pydantic Schemas (input)
 # ---------------------------
 
+#metodo para ventas
+
 class SaleItemIn(BaseModel):
     """Esquema para items individuales de una venta"""
     codigo_unico: str = Field(..., min_length=1, description="Código único del producto")
