@@ -10,6 +10,9 @@ router = APIRouter()
 # Pydantic Schemas
 # ---------------------------
 
+
+#metodo factura
+
 class InvoiceGenerateResponse(BaseModel):
     """Esquema de respuesta para generación de factura"""
     ok: bool = Field(..., description="Indica si la operación fue exitosa")
