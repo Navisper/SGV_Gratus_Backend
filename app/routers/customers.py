@@ -10,6 +10,9 @@ router = APIRouter()
 # Pydantic Schemas
 # ---------------------------
 
+
+#metodo para clientes
+
 class CustomerIn(BaseModel):
     """Esquema para creación y actualización de clientes"""
     nombre: str = Field(..., min_length=1, max_length=200, description="Nombre completo del cliente")
