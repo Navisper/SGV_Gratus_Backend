@@ -4,6 +4,7 @@ from app.core.security import require_role
 
 router = APIRouter()
 
+#metodo productos
 @router.get(
     "/",
     summary="Listar productos",
