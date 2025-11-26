@@ -101,6 +101,9 @@ async def create_credit_sale(body: CreditSaleCreate):
         sale_data["tienda_id"] = body.tienda_id
 
     # Transacción
+
+#metodo transferir
+
     async with db.tx() as tx:
         sale = await tx.sales.create(data=sale_data)
 
